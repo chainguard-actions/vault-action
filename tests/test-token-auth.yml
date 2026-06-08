@@ -1,0 +1,65 @@
+name: Test token auth with secrets
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Start Vault dev server
+        run: |
+          docker run -d --name vault \
+            -p 8200:8200 \
+            -e VAULT_DEV_ROOT_TOKEN_ID=root \
+            -e VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200 \
+            hashicorp/vault:1.15 server -dev
+          sleep 5
+          docker exec vault vault status || true
+
+      - name: Seed Vault with a secret
+        run: |
+          export VAULT_ADDR=http://127.0.0.1:8200
+          export VAULT_TOKEN=root
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault kv put secret/myapp username=myuser password=mypass
+
+      - id: vault
+        uses: .
+        with:
+          url: http://127.0.0.1:8200
+          method: token
+          token: root
+          secrets: secret/data/myapp username | MY_USERNAME ; secret/data/myapp password | MY_PASSWORD
+          namespace: ""
+          path: ""
+          extraHeaders: |
+            X-Custom-Header: test-value
+          exportEnv: "true"
+          exportToken: "false"
+          outputToken: "false"
+          tlsSkipVerify: "true"
+          ignoreNotFound: "false"
+          secretEncodingType: ""
+
+      - name: Assert MY_USERNAME env var is set
+        run: |
+          echo "MY_USERNAME: $MY_USERNAME"
+          if [ "$MY_USERNAME" != "myuser" ]; then
+            echo "FAIL: expected MY_USERNAME=myuser, got $MY_USERNAME"
+            exit 1
+          fi
+          echo "PASS"
+
+      - name: Assert MY_PASSWORD env var is set
+        run: |
+          echo "MY_PASSWORD: $MY_PASSWORD"
+          if [ "$MY_PASSWORD" != "mypass" ]; then
+            echo "FAIL: expected MY_PASSWORD=mypass, got $MY_PASSWORD"
+            exit 1
+          fi
+          echo "PASS"
+
+      - name: Stop Vault
+        if: always()
+        run: docker rm -f vault || true

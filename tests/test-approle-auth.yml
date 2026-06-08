@@ -1,0 +1,70 @@
+name: Test AppRole authentication
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Start Vault dev server
+        run: |
+          docker run -d --name vault \
+            -p 8200:8200 \
+            -e VAULT_DEV_ROOT_TOKEN_ID=root \
+            -e VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200 \
+            hashicorp/vault:1.15 server -dev
+          sleep 5
+
+      - name: Configure AppRole and seed secret
+        run: |
+          export VAULT_ADDR=http://127.0.0.1:8200
+          export VAULT_TOKEN=root
+          # Enable AppRole auth
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault auth enable approle
+          # Create a policy
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault policy write myapp-policy - <<'EOF'
+          path "secret/*" {
+            capabilities = ["read"]
+          }
+          EOF
+          # Create AppRole
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault write auth/approle/role/myapp-role policies=myapp-policy
+          # Get role-id
+          ROLE_ID=$(docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault read -field=role_id auth/approle/role/myapp-role/role-id)
+          # Get secret-id
+          SECRET_ID=$(docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault write -field=secret_id -f auth/approle/role/myapp-role/secret-id)
+          echo "ROLE_ID=$ROLE_ID" >> $GITHUB_ENV
+          echo "SECRET_ID=$SECRET_ID" >> $GITHUB_ENV
+          # Seed a secret
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault kv put secret/myapp apikey=supersecret
+
+      - id: vault
+        uses: .
+        with:
+          url: http://127.0.0.1:8200
+          method: approle
+          role: myapp-role
+          roleId: ${{ env.ROLE_ID }}
+          secretId: ${{ env.SECRET_ID }}
+          secrets: secret/data/myapp apikey | MY_API_KEY
+          tlsSkipVerify: "true"
+
+      - name: Assert MY_API_KEY env var is set
+        run: |
+          echo "MY_API_KEY: $MY_API_KEY"
+          if [ "$MY_API_KEY" != "supersecret" ]; then
+            echo "FAIL: expected MY_API_KEY=supersecret, got $MY_API_KEY"
+            exit 1
+          fi
+          echo "PASS"
+
+      - name: Stop Vault
+        if: always()
+        run: docker rm -f vault || true

@@ -1,0 +1,7 @@
+{
+  "ran": true,
+  "passed": true,
+  "output": "\n\u003e vault-action@0.1.0 test\n\u003e jest\n\nPASS src/auth.test.js\nPASS src/action.test.js\nPASS src/retries.test.js\n\nTest Suites: 3 passed, 3 total\nTests:       34 passed, 34 total\nSnapshots:   0 total\nTime:        3.983 s\nRan all test suites.\n",
+  "duration_ms": 4718,
+  "exit_code": 0
+}
