@@ -1,6 +1,6 @@
 # hashicorp/vault-action
 
-A GitHub Action that simplifies using HashiCorp Vault™ secrets as build variables.
+A Github Action that allows you to consume HashiCorp Vault™ secrets as secure environment variables
 
 Hardened by [Chainguard](https://www.chainguard.dev) from the upstream action at [https://github.com/hashicorp/vault-action](https://github.com/hashicorp/vault-action).
 
@@ -9,6 +9,7 @@ Hardened by [Chainguard](https://www.chainguard.dev) from the upstream action at
 | Version | Tag | Upstream commit |
 |---------|-----|-----------------|
 | v3.4.0 | [`v3.4.0`](https://github.com/chainguard-actions/hashicorp-vault-action/tree/v3.4.0) | — |
+| v4.0.0 | [`v4.0.0`](https://github.com/chainguard-actions/hashicorp-vault-action/tree/v4.0.0) | [`892a268`](https://github.com/hashicorp/vault-action/commit/892a26828f195e65540a40b4768ae4571f51ebfc) |
 
 ## Privacy
 
