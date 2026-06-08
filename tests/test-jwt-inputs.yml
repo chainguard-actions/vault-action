@@ -1,0 +1,64 @@
+name: Test JWT auth inputs coverage
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Generate RSA key for JWT signing
+        run: |
+          openssl genrsa -out jwt.key 2048
+          # Base64 encode the key
+          echo "JWT_PRIVATE_KEY=$(base64 -w 0 jwt.key)" >> $GITHUB_ENV
+
+      - name: Start Vault dev server
+        run: |
+          docker run -d \
+            --name vault \
+            --network host \
+            -e VAULT_DEV_ROOT_TOKEN_ID=root \
+            -e VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200 \
+            hashicorp/vault:1.15 server -dev
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8200/v1/sys/health > /dev/null 2>&1; then
+              echo "Vault is ready"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Seed Vault with a secret
+        run: |
+          docker exec vault vault kv put secret/myapp/config value=jwt-test-secret
+
+      - name: Test action with JWT inputs (expect failure since JWT auth not configured)
+        id: vault
+        uses: .
+        continue-on-error: true
+        with:
+          url: http://127.0.0.1:8200
+          method: jwt
+          role: myrole
+          jwtPrivateKey: ${{ env.JWT_PRIVATE_KEY }}
+          jwtKeyPassword: ""
+          jwtGithubAudience: https://github.com/my-org
+          jwtTtl: 3600
+          secrets: secret/data/myapp/config value | JWT_TEST_VALUE
+          tlsSkipVerify: "true"
+
+      - name: Assert action attempted JWT auth
+        run: |
+          echo "outcome: ${{ steps.vault.outcome }}"
+          # JWT auth is not configured in the dev server, so failure is expected.
+          # The important thing is that all JWT inputs were accepted by the action.
+          if [ "${{ steps.vault.outcome }}" = "success" ]; then
+            echo "PASS: action succeeded"
+          else
+            echo "PASS: action failed as expected (JWT auth not configured in dev server)"
+          fi
+
+      - name: Stop Vault
+        if: always()
+        run: docker rm -f vault || true

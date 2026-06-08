@@ -1,0 +1,68 @@
+name: Test PKI certificate generation
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Start Vault dev server
+        run: |
+          docker run -d \
+            --name vault \
+            --network host \
+            -e VAULT_DEV_ROOT_TOKEN_ID=root \
+            -e VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200 \
+            hashicorp/vault:1.15 server -dev
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8200/v1/sys/health > /dev/null 2>&1; then
+              echo "Vault is ready"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Configure PKI secrets engine
+        run: |
+          export VAULT_ADDR=http://127.0.0.1:8200
+          export VAULT_TOKEN=root
+          # Enable PKI secrets engine
+          docker exec vault vault secrets enable pki
+          # Configure PKI with a max TTL
+          docker exec vault vault secrets tune -max-lease-ttl=8760h pki
+          # Generate root CA
+          docker exec vault vault write -field=certificate pki/root/generate/internal \
+            common_name="example.com" \
+            ttl=8760h > /dev/null
+          # Configure PKI URLs
+          docker exec vault vault write pki/config/urls \
+            issuing_certificates="http://127.0.0.1:8200/v1/pki/ca" \
+            crl_distribution_points="http://127.0.0.1:8200/v1/pki/crl"
+          # Create a role for issuing certs
+          docker exec vault vault write pki/roles/example-dot-com \
+            allowed_domains=example.com \
+            allow_subdomains=true \
+            max_ttl=72h
+
+      - name: Test action with pki input
+        id: vault
+        uses: .
+        with:
+          url: http://127.0.0.1:8200
+          token: root
+          pki: pki/issue/example-dot-com common_name=test.example.com | MY_CERT
+          tlsSkipVerify: "true"
+
+      - name: Assert MY_CERT is set
+        run: |
+          echo "MY_CERT length: ${#MY_CERT}"
+          if [ -z "$MY_CERT" ]; then
+            echo "FAIL: expected MY_CERT to be set"
+            exit 1
+          fi
+          echo "PASS: MY_CERT is set with length ${#MY_CERT}"
+
+      - name: Stop Vault
+        if: always()
+        run: docker rm -f vault || true

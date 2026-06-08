@@ -1,4 +1,4 @@
-name: Test userpass authentication
+name: Test custom auth payload input coverage
 on:
   workflow_dispatch:
 jobs:
@@ -23,36 +23,32 @@ jobs:
             sleep 1
           done
 
-      - name: Configure userpass auth and seed secret
+      - name: Configure userpass auth for custom payload test
         run: |
-          export VAULT_ADDR=http://127.0.0.1:8200
-          export VAULT_TOKEN=root
-          # Enable userpass auth
           docker exec vault vault auth enable userpass
-          # Create a policy
           docker exec vault sh -c 'echo "path \"secret/*\" { capabilities = [\"read\"] }" | vault policy write myapp-policy -'
-          # Create a user
-          docker exec vault vault write auth/userpass/users/testuser \
-            password=testpass \
+          docker exec vault vault write auth/userpass/users/customuser \
+            password=custompass \
             policies=myapp-policy
-          # Seed a secret
-          docker exec vault vault kv put secret/myapp/data value=userpass-secret
+          docker exec vault vault kv put secret/myapp/data value=custom-auth-secret
 
-      - id: vault
+      - name: Test action with authPayload input
+        id: vault
         uses: .
         with:
           url: http://127.0.0.1:8200
           method: userpass
-          username: testuser
-          password: testpass
-          secrets: secret/data/myapp/data value | USERPASS_VALUE
+          path: userpass
+          authPayload: '{"password": "custompass"}'
+          role: customuser
+          secrets: secret/data/myapp/data value | CUSTOM_AUTH_VALUE
           tlsSkipVerify: "true"
 
-      - name: Assert USERPASS_VALUE is set
+      - name: Assert CUSTOM_AUTH_VALUE is set
         run: |
-          echo "USERPASS_VALUE: $USERPASS_VALUE"
-          if [ "$USERPASS_VALUE" != "userpass-secret" ]; then
-            echo "FAIL: expected USERPASS_VALUE=userpass-secret, got $USERPASS_VALUE"
+          echo "CUSTOM_AUTH_VALUE: $CUSTOM_AUTH_VALUE"
+          if [ "$CUSTOM_AUTH_VALUE" != "custom-auth-secret" ]; then
+            echo "FAIL: expected CUSTOM_AUTH_VALUE=custom-auth-secret, got $CUSTOM_AUTH_VALUE"
             exit 1
           fi
           echo "PASS"

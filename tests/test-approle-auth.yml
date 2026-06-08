@@ -9,58 +9,58 @@ jobs:
 
       - name: Start Vault dev server
         run: |
-          docker run -d --name vault \
-            -p 8200:8200 \
+          docker run -d \
+            --name vault \
+            --network host \
             -e VAULT_DEV_ROOT_TOKEN_ID=root \
             -e VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200 \
             hashicorp/vault:1.15 server -dev
-          sleep 5
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8200/v1/sys/health > /dev/null 2>&1; then
+              echo "Vault is ready"
+              break
+            fi
+            sleep 1
+          done
 
       - name: Configure AppRole and seed secret
         run: |
           export VAULT_ADDR=http://127.0.0.1:8200
           export VAULT_TOKEN=root
           # Enable AppRole auth
-          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
-            vault auth enable approle
+          docker exec vault vault auth enable approle
           # Create a policy
-          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
-            vault policy write myapp-policy - <<'EOF'
-          path "secret/*" {
-            capabilities = ["read"]
-          }
-          EOF
-          # Create AppRole
-          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
-            vault write auth/approle/role/myapp-role policies=myapp-policy
-          # Get role-id
-          ROLE_ID=$(docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
-            vault read -field=role_id auth/approle/role/myapp-role/role-id)
-          # Get secret-id
-          SECRET_ID=$(docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
-            vault write -field=secret_id -f auth/approle/role/myapp-role/secret-id)
+          docker exec vault sh -c 'echo "path \"secret/*\" { capabilities = [\"read\"] }" | vault policy write myapp-policy -'
+          # Create an AppRole with the policy
+          docker exec vault vault write auth/approle/role/myapp \
+            token_policies=myapp-policy \
+            token_ttl=1h \
+            token_max_ttl=4h
+          # Seed a secret
+          docker exec vault vault kv put secret/myapp/data value=approle-secret
+          # Get role-id and secret-id
+          ROLE_ID=$(docker exec vault vault read -field=role_id auth/approle/role/myapp/role-id)
+          SECRET_ID=$(docker exec vault vault write -field=secret_id -f auth/approle/role/myapp/secret-id)
           echo "ROLE_ID=$ROLE_ID" >> $GITHUB_ENV
           echo "SECRET_ID=$SECRET_ID" >> $GITHUB_ENV
-          # Seed a secret
-          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
-            vault kv put secret/myapp apikey=supersecret
 
       - id: vault
         uses: .
         with:
           url: http://127.0.0.1:8200
           method: approle
-          role: myapp-role
           roleId: ${{ env.ROLE_ID }}
           secretId: ${{ env.SECRET_ID }}
-          secrets: secret/data/myapp apikey | MY_API_KEY
+          role: myapp
+          path: approle
+          secrets: secret/data/myapp/data value | APPROLE_VALUE
           tlsSkipVerify: "true"
 
-      - name: Assert MY_API_KEY env var is set
+      - name: Assert APPROLE_VALUE is set
         run: |
-          echo "MY_API_KEY: $MY_API_KEY"
-          if [ "$MY_API_KEY" != "supersecret" ]; then
-            echo "FAIL: expected MY_API_KEY=supersecret, got $MY_API_KEY"
+          echo "APPROLE_VALUE: $APPROLE_VALUE"
+          if [ "$APPROLE_VALUE" != "approle-secret" ]; then
+            echo "FAIL: expected APPROLE_VALUE=approle-secret, got $APPROLE_VALUE"
             exit 1
           fi
           echo "PASS"

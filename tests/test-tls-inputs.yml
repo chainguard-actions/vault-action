@@ -1,0 +1,68 @@
+name: Test TLS certificate inputs coverage
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Start Vault dev server (non-TLS for simplicity)
+        run: |
+          docker run -d \
+            --name vault \
+            --network host \
+            -e VAULT_DEV_ROOT_TOKEN_ID=root \
+            -e VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200 \
+            hashicorp/vault:1.15 server -dev
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8200/v1/sys/health > /dev/null 2>&1; then
+              echo "Vault is ready"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Seed Vault with a secret
+        run: |
+          docker exec vault vault kv put secret/myapp/config value=tls-test-secret
+
+      - name: Generate self-signed CA and client certs for input coverage
+        run: |
+          # Generate a self-signed CA cert
+          openssl req -x509 -newkey rsa:2048 -keyout ca.key -out ca.crt \
+            -days 1 -nodes -subj "/CN=test-ca"
+          # Generate client key and cert signed by CA
+          openssl req -newkey rsa:2048 -keyout client.key -out client.csr \
+            -nodes -subj "/CN=test-client"
+          openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key \
+            -CAcreateserial -out client.crt -days 1
+          # Base64 encode them
+          echo "CA_CERT=$(base64 -w 0 ca.crt)" >> $GITHUB_ENV
+          echo "CLIENT_CERT=$(base64 -w 0 client.crt)" >> $GITHUB_ENV
+          echo "CLIENT_KEY=$(base64 -w 0 client.key)" >> $GITHUB_ENV
+
+      - name: Test action with TLS certificate inputs (tlsSkipVerify=true to bypass actual TLS)
+        id: vault
+        uses: .
+        with:
+          url: http://127.0.0.1:8200
+          token: root
+          secrets: secret/data/myapp/config value | TLS_TEST_VALUE
+          caCertificate: ${{ env.CA_CERT }}
+          clientCertificate: ${{ env.CLIENT_CERT }}
+          clientKey: ${{ env.CLIENT_KEY }}
+          tlsSkipVerify: "true"
+
+      - name: Assert TLS_TEST_VALUE is set
+        run: |
+          echo "TLS_TEST_VALUE: $TLS_TEST_VALUE"
+          if [ "$TLS_TEST_VALUE" != "tls-test-secret" ]; then
+            echo "FAIL: expected TLS_TEST_VALUE=tls-test-secret, got $TLS_TEST_VALUE"
+            exit 1
+          fi
+          echo "PASS"
+
+      - name: Stop Vault
+        if: always()
+        run: docker rm -f vault || true
