@@ -1,0 +1,72 @@
+name: Test PKI certificate generation input coverage
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Start Vault dev server
+        run: |
+          docker run -d \
+            --name vault \
+            --network host \
+            -e VAULT_DEV_ROOT_TOKEN_ID=root \
+            -e VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200 \
+            hashicorp/vault:1.15 server -dev
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8200/v1/sys/health > /dev/null 2>&1; then
+              echo "Vault is ready"
+              break
+            fi
+            echo "Waiting for Vault... ($i)"
+            sleep 1
+          done
+
+      - name: Configure PKI secrets engine
+        run: |
+          # Enable PKI secrets engine
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault secrets enable pki
+          # Tune PKI max lease TTL
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault secrets tune -max-lease-ttl=8760h pki
+          # Generate root CA
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault write pki/root/generate/internal \
+              common_name="example.com" \
+              ttl=8760h
+          # Configure PKI URLs
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault write pki/config/urls \
+              issuing_certificates="http://127.0.0.1:8200/v1/pki/ca" \
+              crl_distribution_points="http://127.0.0.1:8200/v1/pki/crl"
+          # Create a role
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault write pki/roles/my-role \
+              allowed_domains="example.com" \
+              allow_subdomains=true \
+              max_ttl=72h
+
+      - name: Run action with PKI input
+        id: vault
+        uses: .
+        with:
+          url: http://127.0.0.1:8200
+          token: root
+          pki: pki/issue/my-role common_name=test.example.com ttl=1h | MY_CERT
+          tlsSkipVerify: "true"
+          ignoreNotFound: "false"
+          exportEnv: "true"
+          exportToken: "false"
+          outputToken: "false"
+
+      - name: Assert MY_CERT is set
+        run: |
+          echo "MY_CERT length: ${#MY_CERT}"
+          if [ -z "$MY_CERT" ]; then
+            echo "FAIL: expected MY_CERT to be non-empty"
+            exit 1
+          fi
+          echo "PASS: PKI certificate was generated"

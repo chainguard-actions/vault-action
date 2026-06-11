@@ -1,0 +1,74 @@
+name: Test AppRole authentication
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Start Vault dev server
+        run: |
+          docker run -d \
+            --name vault \
+            --network host \
+            -e VAULT_DEV_ROOT_TOKEN_ID=root \
+            -e VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200 \
+            hashicorp/vault:1.15 server -dev
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8200/v1/sys/health > /dev/null 2>&1; then
+              echo "Vault is ready"
+              break
+            fi
+            echo "Waiting for Vault... ($i)"
+            sleep 1
+          done
+
+      - name: Configure AppRole and seed secret
+        run: |
+          export VAULT_ADDR=http://127.0.0.1:8200
+          export VAULT_TOKEN=root
+          # Enable AppRole auth
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault auth enable approle
+          # Create a policy
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            sh -c 'echo "path \"secret/*\" { capabilities = [\"read\"] }" | vault policy write myapp-policy -'
+          # Create AppRole
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault write auth/approle/role/myapp-role \
+              token_policies="myapp-policy" \
+              token_ttl=1h
+          # Seed a secret
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault kv put secret/myapp appkey=appvalue
+          # Get role-id and secret-id
+          ROLE_ID=$(docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault read -field=role_id auth/approle/role/myapp-role/role-id)
+          SECRET_ID=$(docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault write -field=secret_id -f auth/approle/role/myapp-role/secret-id)
+          echo "ROLE_ID=$ROLE_ID" >> $GITHUB_ENV
+          echo "SECRET_ID=$SECRET_ID" >> $GITHUB_ENV
+
+      - id: vault
+        uses: .
+        with:
+          url: http://127.0.0.1:8200
+          method: approle
+          roleId: ${{ env.ROLE_ID }}
+          secretId: ${{ env.SECRET_ID }}
+          secrets: secret/data/myapp appkey | APP_KEY
+          tlsSkipVerify: "true"
+          ignoreNotFound: "false"
+          exportEnv: "true"
+          exportToken: "false"
+          outputToken: "false"
+
+      - name: Assert APP_KEY is set
+        run: |
+          echo "APP_KEY: $APP_KEY"
+          if [ "$APP_KEY" != "appvalue" ]; then
+            echo "FAIL: expected APP_KEY=appvalue, got '$APP_KEY'"
+            exit 1
+          fi
+          echo "PASS"
