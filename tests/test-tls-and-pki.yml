@@ -1,0 +1,118 @@
+name: Test TLS, PKI, and additional auth inputs
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Start Vault dev server
+        run: |
+          docker run -d \
+            --name vault \
+            --network host \
+            -e VAULT_DEV_ROOT_TOKEN_ID=root \
+            -e VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200 \
+            hashicorp/vault:1.17 server -dev
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8200/v1/sys/health > /dev/null 2>&1; then
+              echo "Vault is ready"
+              break
+            fi
+            echo "Waiting for Vault... ($i)"
+            sleep 1
+          done
+
+      - name: Seed Vault with test secret and enable PKI
+        run: |
+          # Seed a KV secret
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault kv put secret/myapp myvalue=hello
+          # Enable PKI secrets engine
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault secrets enable pki
+          # Generate root CA
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault write -field=certificate pki/root/generate/internal \
+              common_name=example.com \
+              ttl=87600h > /dev/null
+          # Configure PKI URLs
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault write pki/config/urls \
+              issuing_certificates="http://127.0.0.1:8200/v1/pki/ca" \
+              crl_distribution_points="http://127.0.0.1:8200/v1/pki/crl"
+          # Create a PKI role
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault write pki/roles/example-dot-com \
+              allowed_domains=example.com \
+              allow_subdomains=true \
+              max_ttl=72h
+
+      - id: action
+        uses: .
+        with:
+          url: http://127.0.0.1:8200
+          pki: pki/issue/example-dot-com common_name=test.example.com | MY_CERT
+          token: root
+          namespace: ''
+          caCertificate: ''
+          clientCertificate: ''
+          clientKey: ''
+          tlsSkipVerify: 'true'
+
+      - name: Assert PKI certificate was generated
+        run: |
+          echo "MY_CERT length: ${#MY_CERT}"
+          if [ -z "$MY_CERT" ]; then
+            echo "FAIL: expected MY_CERT to be non-empty"
+            exit 1
+          fi
+          echo "PASS"
+
+  test-github-token-and-auth-payload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Start Vault dev server
+        run: |
+          docker run -d \
+            --name vault \
+            --network host \
+            -e VAULT_DEV_ROOT_TOKEN_ID=root \
+            -e VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200 \
+            hashicorp/vault:1.17 server -dev
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8200/v1/sys/health > /dev/null 2>&1; then
+              echo "Vault is ready"
+              break
+            fi
+            echo "Waiting for Vault... ($i)"
+            sleep 1
+          done
+
+      - name: Seed Vault with test secret
+        run: |
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault kv put secret/myapp myvalue=hello
+
+      - name: Test with authPayload and githubToken inputs (token fallback)
+        id: action-auth-payload
+        uses: .
+        with:
+          url: http://127.0.0.1:8200
+          secrets: secret/data/myapp myvalue | MY_VALUE
+          token: root
+          githubToken: fake-github-token
+          authPayload: '{"token": "root"}'
+          tlsSkipVerify: 'true'
+
+      - name: Assert secret retrieved
+        run: |
+          echo "MY_VALUE: $MY_VALUE"
+          if [ "$MY_VALUE" != "hello" ]; then
+            echo "FAIL: expected MY_VALUE to be 'hello', got '$MY_VALUE'"
+            exit 1
+          fi
+          echo "PASS"

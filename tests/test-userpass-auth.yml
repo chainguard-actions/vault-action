@@ -14,49 +14,48 @@ jobs:
             --network host \
             -e VAULT_DEV_ROOT_TOKEN_ID=root \
             -e VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200 \
-            hashicorp/vault:1.15 server -dev
+            hashicorp/vault:1.17 server -dev
           for i in $(seq 1 30); do
             if curl -sf http://127.0.0.1:8200/v1/sys/health > /dev/null 2>&1; then
               echo "Vault is ready"
               break
             fi
+            echo "Waiting for Vault... ($i)"
             sleep 1
           done
 
       - name: Configure userpass auth and seed secret
         run: |
-          export VAULT_ADDR=http://127.0.0.1:8200
-          export VAULT_TOKEN=root
           # Enable userpass auth
-          docker exec vault vault auth enable userpass
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault auth enable userpass
           # Create a policy
-          docker exec vault sh -c 'echo "path \"secret/*\" { capabilities = [\"read\"] }" | vault policy write myapp-policy -'
-          # Create a user
-          docker exec vault vault write auth/userpass/users/testuser \
-            password=testpass \
-            policies=myapp-policy
-          # Seed a secret
-          docker exec vault vault kv put secret/myapp/data value=userpass-secret
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            sh -c 'echo "path \"secret/*\" { capabilities = [\"read\"] }" | vault policy write myapp-policy -'
+          # Create user
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault write auth/userpass/users/testuser \
+              password=testpass \
+              policies=myapp-policy
+          # Seed secret
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault kv put secret/myapp dbpassword=dbsecret
 
-      - id: vault
+      - id: action
         uses: .
         with:
           url: http://127.0.0.1:8200
+          secrets: secret/data/myapp dbpassword | DB_PASSWORD
           method: userpass
           username: testuser
           password: testpass
-          secrets: secret/data/myapp/data value | USERPASS_VALUE
-          tlsSkipVerify: "true"
+          tlsSkipVerify: 'true'
 
-      - name: Assert USERPASS_VALUE is set
+      - name: Assert secret was retrieved via userpass
         run: |
-          echo "USERPASS_VALUE: $USERPASS_VALUE"
-          if [ "$USERPASS_VALUE" != "userpass-secret" ]; then
-            echo "FAIL: expected USERPASS_VALUE=userpass-secret, got $USERPASS_VALUE"
+          echo "DB_PASSWORD: $DB_PASSWORD"
+          if [ "$DB_PASSWORD" != "dbsecret" ]; then
+            echo "FAIL: expected DB_PASSWORD to be 'dbsecret', got '$DB_PASSWORD'"
             exit 1
           fi
           echo "PASS"
-
-      - name: Stop Vault
-        if: always()
-        run: docker rm -f vault || true

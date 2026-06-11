@@ -1,4 +1,4 @@
-name: Test token authentication
+name: Test extra options (headers, encoding, ignoreNotFound)
 on:
   workflow_dispatch:
 jobs:
@@ -15,7 +15,6 @@ jobs:
             -e VAULT_DEV_ROOT_TOKEN_ID=root \
             -e VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200 \
             hashicorp/vault:1.17 server -dev
-          # Wait for Vault to be ready
           for i in $(seq 1 30); do
             if curl -sf http://127.0.0.1:8200/v1/sys/health > /dev/null 2>&1; then
               echo "Vault is ready"
@@ -25,33 +24,30 @@ jobs:
             sleep 1
           done
 
-      - name: Seed Vault with test secret
+      - name: Seed Vault with base64-encoded secret
         run: |
-          export VAULT_ADDR=http://127.0.0.1:8200
-          export VAULT_TOKEN=root
-          docker exec vault vault kv put secret/myapp username=testuser password=testpass
+          # Store a base64-encoded value
+          B64_VALUE=$(echo -n "hello-world" | base64)
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault kv put secret/encoded value="$B64_VALUE"
 
       - id: action
         uses: .
         with:
           url: http://127.0.0.1:8200
-          secrets: secret/data/myapp username | MY_USERNAME ; secret/data/myapp password | MY_PASSWORD
+          secrets: secret/data/encoded value | DECODED_VALUE
           token: root
-          exportEnv: 'true'
-          exportToken: 'false'
-          outputToken: 'false'
+          extraHeaders: |
+            X-Custom-Header: test-value
+          secretEncodingType: base64
+          ignoreNotFound: 'true'
           tlsSkipVerify: 'true'
 
-      - name: Assert secrets were retrieved
+      - name: Assert decoded secret
         run: |
-          echo "MY_USERNAME: $MY_USERNAME"
-          if [ "$MY_USERNAME" != "testuser" ]; then
-            echo "FAIL: expected MY_USERNAME to be 'testuser', got '$MY_USERNAME'"
-            exit 1
-          fi
-          echo "MY_PASSWORD: $MY_PASSWORD"
-          if [ "$MY_PASSWORD" != "testpass" ]; then
-            echo "FAIL: expected MY_PASSWORD to be 'testpass', got '$MY_PASSWORD'"
+          echo "DECODED_VALUE: $DECODED_VALUE"
+          if [ "$DECODED_VALUE" != "hello-world" ]; then
+            echo "FAIL: expected DECODED_VALUE to be 'hello-world', got '$DECODED_VALUE'"
             exit 1
           fi
           echo "PASS"

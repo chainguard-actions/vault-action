@@ -1,0 +1,83 @@
+name: Test JWT authentication inputs
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Start Vault dev server
+        run: |
+          docker run -d \
+            --name vault \
+            --network host \
+            -e VAULT_DEV_ROOT_TOKEN_ID=root \
+            -e VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200 \
+            hashicorp/vault:1.17 server -dev
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8200/v1/sys/health > /dev/null 2>&1; then
+              echo "Vault is ready"
+              break
+            fi
+            echo "Waiting for Vault... ($i)"
+            sleep 1
+          done
+
+      - name: Generate RSA key for JWT signing
+        run: |
+          openssl genrsa -out /tmp/jwt_key.pem 2048
+          # Base64 encode the private key
+          JWT_PRIVATE_KEY=$(base64 -w 0 /tmp/jwt_key.pem)
+          echo "JWT_PRIVATE_KEY=$JWT_PRIVATE_KEY" >> $GITHUB_ENV
+          # Get the public key for Vault configuration
+          openssl rsa -in /tmp/jwt_key.pem -pubout -out /tmp/jwt_pub.pem
+
+      - name: Configure JWT auth in Vault
+        run: |
+          # Enable JWT auth
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault auth enable jwt
+          # Copy public key into container
+          docker cp /tmp/jwt_pub.pem vault:/tmp/jwt_pub.pem
+          # Configure JWT auth with the public key
+          PUB_KEY=$(cat /tmp/jwt_pub.pem)
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            sh -c "vault write auth/jwt/config jwt_validation_pubkeys='$(cat /tmp/jwt_pub.pem)'"
+          # Create a policy
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            sh -c 'echo "path \"secret/*\" { capabilities = [\"read\"] }" | vault policy write myapp-policy -'
+          # Create a JWT role
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault write auth/jwt/role/myapp-role \
+              role_type=jwt \
+              bound_audiences=vault \
+              user_claim=sub \
+              policies=myapp-policy \
+              ttl=1h
+          # Seed secret
+          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
+            vault kv put secret/myapp jwtvalue=jwtsecret
+
+      - id: action
+        uses: .
+        with:
+          url: http://127.0.0.1:8200
+          secrets: secret/data/myapp jwtvalue | JWT_VALUE
+          method: jwt
+          path: jwt
+          role: myapp-role
+          jwtPrivateKey: ${{ env.JWT_PRIVATE_KEY }}
+          jwtKeyPassword: ''
+          jwtGithubAudience: vault
+          jwtTtl: 3600
+          tlsSkipVerify: 'true'
+
+      - name: Assert secret was retrieved via JWT
+        run: |
+          echo "JWT_VALUE: $JWT_VALUE"
+          if [ "$JWT_VALUE" != "jwtsecret" ]; then
+            echo "FAIL: expected JWT_VALUE to be 'jwtsecret', got '$JWT_VALUE'"
+            exit 1
+          fi
+          echo "PASS"
