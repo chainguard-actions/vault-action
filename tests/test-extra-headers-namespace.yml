@@ -1,4 +1,4 @@
-name: Test pki input (PKI certificate generation)
+name: Test extraHeaders and namespace inputs
 on:
   workflow_dispatch:
 jobs:
@@ -13,8 +13,12 @@ jobs:
           url: 'http://localhost:8200'
           method: 'token'
           token: 'fake-test-token'
-          pki: 'pki/issue/my-role common_name=example.com | MY_CERT'
-      - name: Assert action ran (failed gracefully — no real Vault server for PKI)
+          namespace: 'admin/test-namespace'
+          extraHeaders: |
+            X-Custom-Header: test-value
+            X-Another-Header: another-value
+          secrets: 'secret/data/test key'
+      - name: Assert action ran (failed gracefully — no real Vault server)
         env:
           OUTCOME: ${{ steps.action.outcome }}
         run: |

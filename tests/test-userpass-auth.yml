@@ -1,65 +1,85 @@
-name: Test Userpass authentication
+name: Test userpass authentication method
 on:
   workflow_dispatch:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      vault:
+        image: hashicorp/vault:1.15.0
+        env:
+          VAULT_DEV_ROOT_TOKEN_ID: testtoken
+          VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+        ports:
+          - 8200:8200
+        options: >-
+          --cap-add=IPC_LOCK
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Start Vault dev server
+      - name: Wait for Vault to be ready
         run: |
-          docker run -d \
-            --name vault \
-            --network host \
-            -e VAULT_DEV_ROOT_TOKEN_ID=root \
-            -e VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200 \
-            hashicorp/vault:1.15 server -dev
           for i in $(seq 1 30); do
             if curl -sf http://127.0.0.1:8200/v1/sys/health > /dev/null 2>&1; then
               echo "Vault is ready"
               break
             fi
-            echo "Waiting for Vault... ($i)"
-            sleep 1
+            echo "Waiting for Vault... attempt $i"
+            sleep 2
           done
 
-      - name: Configure Userpass and seed secret
+      - name: Configure Vault userpass auth and seed secrets
+        env:
+          VAULT_ADDR: http://127.0.0.1:8200
+          VAULT_TOKEN: testtoken
         run: |
-          # Enable userpass auth
-          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
-            vault auth enable userpass
-          # Create a policy
-          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
-            sh -c 'echo "path \"secret/*\" { capabilities = [\"read\"] }" | vault policy write myapp-policy -'
-          # Create user
-          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
-            vault write auth/userpass/users/myuser \
-              password=mypassword \
-              policies=myapp-policy
-          # Seed a secret
-          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
-            vault kv put secret/myapp userkey=uservalue
+          # Enable userpass auth method
+          curl -sf -X POST \
+            -H "X-Vault-Token: $VAULT_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"type":"userpass"}' \
+            "$VAULT_ADDR/v1/sys/auth/userpass"
+
+          # Create a policy for reading secrets
+          curl -sf -X POST \
+            -H "X-Vault-Token: $VAULT_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"policy":"path \"secret/*\" { capabilities = [\"read\", \"list\"] }"}' \
+            "$VAULT_ADDR/v1/sys/policies/acl/read-secrets"
+
+          # Create a user with the policy
+          curl -sf -X POST \
+            -H "X-Vault-Token: $VAULT_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"password":"testpassword","policies":["read-secrets"]}' \
+            "$VAULT_ADDR/v1/auth/userpass/users/testuser"
+
+          # Write a test secret
+          curl -sf -X POST \
+            -H "X-Vault-Token: $VAULT_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"data":{"userpass_secret":"USERPASS_SECRET_VALUE"}}' \
+            "$VAULT_ADDR/v1/secret/data/userpass-test"
+
+          echo "Userpass auth configured and secret written"
 
       - id: vault
         uses: .
         with:
           url: http://127.0.0.1:8200
           method: userpass
-          username: myuser
-          password: mypassword
-          secrets: secret/data/myapp userkey | USER_KEY
-          tlsSkipVerify: "true"
-          ignoreNotFound: "false"
-          exportEnv: "true"
-          exportToken: "false"
-          outputToken: "false"
+          username: testuser
+          password: testpassword
+          secrets: secret/data/userpass-test userpass_secret | USERPASS_SECRET
+          exportEnv: 'false'
 
-      - name: Assert USER_KEY is set
+      - name: Assert userpass secret retrieved
+        env:
+          ACTUAL: ${{ steps.vault.outputs.USERPASS_SECRET }}
         run: |
-          echo "USER_KEY: $USER_KEY"
-          if [ "$USER_KEY" != "uservalue" ]; then
-            echo "FAIL: expected USER_KEY=uservalue, got '$USER_KEY'"
+          echo "actual: $ACTUAL"
+          if [ "$ACTUAL" != "USERPASS_SECRET_VALUE" ]; then
+            echo "FAIL: expected 'USERPASS_SECRET_VALUE' but got '$ACTUAL'"
             exit 1
           fi
           echo "PASS"

@@ -1,0 +1,72 @@
+name: Test exportToken and outputToken options
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      vault:
+        image: hashicorp/vault:1.15.0
+        env:
+          VAULT_DEV_ROOT_TOKEN_ID: testtoken
+          VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+        ports:
+          - 8200:8200
+        options: >-
+          --cap-add=IPC_LOCK
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Wait for Vault to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8200/v1/sys/health > /dev/null 2>&1; then
+              echo "Vault is ready"
+              break
+            fi
+            echo "Waiting for Vault... attempt $i"
+            sleep 2
+          done
+
+      - name: Seed Vault with test secret
+        env:
+          VAULT_ADDR: http://127.0.0.1:8200
+          VAULT_TOKEN: testtoken
+        run: |
+          curl -sf -X POST \
+            -H "X-Vault-Token: $VAULT_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"data":{"mykey":"myvalue"}}' \
+            "$VAULT_ADDR/v1/secret/data/token-test"
+          echo "Secret written successfully"
+
+      - id: vault
+        uses: .
+        with:
+          url: http://127.0.0.1:8200
+          token: testtoken
+          secrets: secret/data/token-test mykey | MY_KEY
+          exportEnv: 'false'
+          outputToken: 'true'
+
+      - name: Assert vault_token output is set
+        env:
+          VAULT_TOKEN_OUT: ${{ steps.vault.outputs.vault_token }}
+        run: |
+          echo "vault_token output is set: $([ -n "$VAULT_TOKEN_OUT" ] && echo yes || echo no)"
+          if [ -z "$VAULT_TOKEN_OUT" ]; then
+            echo "FAIL: expected vault_token output to be set but it was empty"
+            exit 1
+          fi
+          echo "PASS: vault_token output is non-empty"
+
+      - name: Assert secret output is still retrieved
+        env:
+          ACTUAL: ${{ steps.vault.outputs.MY_KEY }}
+        run: |
+          echo "actual MY_KEY: $ACTUAL"
+          if [ "$ACTUAL" != "myvalue" ]; then
+            echo "FAIL: expected 'myvalue' but got '$ACTUAL'"
+            exit 1
+          fi
+          echo "PASS"

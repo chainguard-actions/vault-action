@@ -1,0 +1,69 @@
+name: Test KV v1 secret engine
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      vault:
+        image: hashicorp/vault:1.15.0
+        env:
+          VAULT_DEV_ROOT_TOKEN_ID: testtoken
+          VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+        ports:
+          - 8200:8200
+        options: >-
+          --cap-add=IPC_LOCK
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Wait for Vault to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8200/v1/sys/health > /dev/null 2>&1; then
+              echo "Vault is ready"
+              break
+            fi
+            echo "Waiting for Vault... attempt $i"
+            sleep 2
+          done
+
+      - name: Seed Vault with KV v1 secrets
+        env:
+          VAULT_ADDR: http://127.0.0.1:8200
+          VAULT_TOKEN: testtoken
+        run: |
+          # Enable KV v1 engine at custom path
+          curl -sf -X POST \
+            -H "X-Vault-Token: $VAULT_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"type":"kv","options":{"version":"1"}}' \
+            "$VAULT_ADDR/v1/sys/mounts/kv1-engine"
+
+          # Write a KV v1 secret (no /data/ path segment)
+          curl -sf -X POST \
+            -H "X-Vault-Token: $VAULT_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"kvone_secret":"KV1_SECRET_VALUE"}' \
+            "$VAULT_ADDR/v1/kv1-engine/myapp"
+
+          echo "KV v1 secret written successfully"
+
+      - id: vault
+        uses: .
+        with:
+          url: http://127.0.0.1:8200
+          token: testtoken
+          secrets: kv1-engine/myapp kvone_secret | KV1_SECRET
+          exportEnv: 'false'
+
+      - name: Assert KV v1 secret
+        env:
+          ACTUAL: ${{ steps.vault.outputs.KV1_SECRET }}
+        run: |
+          echo "actual: $ACTUAL"
+          if [ "$ACTUAL" != "KV1_SECRET_VALUE" ]; then
+            echo "FAIL: expected 'KV1_SECRET_VALUE' but got '$ACTUAL'"
+            exit 1
+          fi
+          echo "PASS"

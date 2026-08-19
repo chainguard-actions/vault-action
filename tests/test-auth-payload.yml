@@ -1,4 +1,4 @@
-name: Test pki input (PKI certificate generation)
+name: Test authPayload and path inputs
 on:
   workflow_dispatch:
 jobs:
@@ -11,10 +11,11 @@ jobs:
         continue-on-error: true
         with:
           url: 'http://localhost:8200'
-          method: 'token'
-          token: 'fake-test-token'
-          pki: 'pki/issue/my-role common_name=example.com | MY_CERT'
-      - name: Assert action ran (failed gracefully — no real Vault server for PKI)
+          method: 'approle'
+          path: 'approle'
+          authPayload: '{"role_id":"test-role-id","secret_id":"test-secret-id"}'
+          secrets: 'secret/data/test key'
+      - name: Assert action ran (failed gracefully — no real Vault server)
         env:
           OUTCOME: ${{ steps.action.outcome }}
         run: |
