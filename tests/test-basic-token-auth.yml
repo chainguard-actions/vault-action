@@ -1,0 +1,49 @@
+name: Test basic token auth
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Vault
+        run: |
+          # Install vault CLI
+          wget -q -O /tmp/vault.zip https://releases.hashicorp.com/vault/1.13.3/vault_1.13.3_linux_amd64.zip
+          unzip -q /tmp/vault.zip -d /usr/local/bin/
+          vault version
+
+      - name: Start Vault in dev mode
+        run: |
+          export VAULT_DEV_ROOT_TOKEN_ID=testtoken
+          vault server -dev -dev-root-token-id=testtoken -dev-listen-address=127.0.0.1:8200 &
+          echo $! > /tmp/vault.pid
+          # Wait for vault to be ready
+          export VAULT_ADDR=http://127.0.0.1:8200
+          for i in $(seq 1 30); do
+            vault status && break || sleep 1
+          done
+
+      - name: Seed Vault with test secret
+        run: |
+          export VAULT_ADDR=http://127.0.0.1:8200
+          export VAULT_TOKEN=testtoken
+          vault kv put secret/test mysecret=SUPERSECRETVALUE
+
+      - id: vault
+        uses: .
+        with:
+          url: http://127.0.0.1:8200
+          token: testtoken
+          secrets: secret/data/test mysecret
+
+      - name: Assert secret exported as env var
+        run: |
+          echo "MYSECRET is set: $([ -n "$MYSECRET" ] && echo yes || echo no)"
+          if [ "$MYSECRET" != "SUPERSECRETVALUE" ]; then
+            echo "FAIL: expected MYSECRET=SUPERSECRETVALUE, got: $MYSECRET"
+            exit 1
+          fi
+          echo "PASS"

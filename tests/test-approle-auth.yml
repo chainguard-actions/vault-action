@@ -4,71 +4,94 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      vault:
+        image: hashicorp/vault:1.17
+        ports:
+          - 8200:8200
+        env:
+          VAULT_DEV_ROOT_TOKEN_ID: test-root-token
+          VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+        options: >-
+          --cap-add=IPC_LOCK
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Start Vault dev server
+      - name: Wait for Vault to be ready
         run: |
-          docker run -d \
-            --name vault \
-            --network host \
-            -e VAULT_DEV_ROOT_TOKEN_ID=root \
-            -e VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200 \
-            hashicorp/vault:1.17 server -dev
           for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:8200/v1/sys/health > /dev/null 2>&1; then
+            if curl -sf http://127.0.0.1:8200/v1/sys/health; then
               echo "Vault is ready"
               break
             fi
-            echo "Waiting for Vault... ($i)"
-            sleep 1
+            echo "Waiting for Vault... attempt $i"
+            sleep 2
           done
 
-      - name: Configure AppRole and seed secret
+      - name: Configure Vault AppRole and seed secret
+        env:
+          VAULT_ADDR: http://127.0.0.1:8200
+          VAULT_TOKEN: test-root-token
         run: |
-          export VAULT_ADDR=http://127.0.0.1:8200
-          export VAULT_TOKEN=root
-          # Enable AppRole auth
-          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
-            vault auth enable approle
+          # Enable AppRole auth method
+          curl -sf \
+            -H "X-Vault-Token: $VAULT_TOKEN" \
+            -H "Content-Type: application/json" \
+            -X POST \
+            -d '{"type": "approle"}' \
+            "$VAULT_ADDR/v1/sys/auth/approle"
+
           # Create a policy
-          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
-            sh -c 'echo "path \"secret/*\" { capabilities = [\"read\"] }" | vault policy write myapp-policy -'
-          # Create AppRole
-          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
-            vault write auth/approle/role/myapp-role \
-              token_policies="myapp-policy" \
-              token_ttl=1h \
-              token_max_ttl=4h
-          # Seed secret
-          docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
-            vault kv put secret/myapp apikey=supersecret
-          # Get role-id and secret-id
-          ROLE_ID=$(docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
-            vault read -field=role_id auth/approle/role/myapp-role/role-id)
-          SECRET_ID=$(docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault \
-            vault write -field=secret_id -f auth/approle/role/myapp-role/secret-id)
+          curl -sf \
+            -H "X-Vault-Token: $VAULT_TOKEN" \
+            -H "Content-Type: application/json" \
+            -X PUT \
+            -d '{"policy": "path \"secret/*\" { capabilities = [\"read\", \"list\"] }"}' \
+            "$VAULT_ADDR/v1/sys/policies/acl/myapp-policy"
+
+          # Create an AppRole
+          curl -sf \
+            -H "X-Vault-Token: $VAULT_TOKEN" \
+            -H "Content-Type: application/json" \
+            -X POST \
+            -d '{"policies": ["myapp-policy"], "token_ttl": "1h"}' \
+            "$VAULT_ADDR/v1/auth/approle/role/myapp"
+
+          # Seed the secret
+          curl -sf \
+            -H "X-Vault-Token: $VAULT_TOKEN" \
+            -H "Content-Type: application/json" \
+            -X POST \
+            -d '{"data": {"DB_PASSWORD": "supersecret"}}' \
+            "$VAULT_ADDR/v1/secret/data/myapp"
+
+          # Retrieve role-id and secret-id and write to files for next steps
+          ROLE_ID=$(curl -sf \
+            -H "X-Vault-Token: $VAULT_TOKEN" \
+            "$VAULT_ADDR/v1/auth/approle/role/myapp/role-id" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['role_id'])")
           echo "ROLE_ID=$ROLE_ID" >> $GITHUB_ENV
+
+          SECRET_ID=$(curl -sf \
+            -H "X-Vault-Token: $VAULT_TOKEN" \
+            -X POST \
+            "$VAULT_ADDR/v1/auth/approle/role/myapp/secret-id" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['secret_id'])")
           echo "SECRET_ID=$SECRET_ID" >> $GITHUB_ENV
 
-      - id: action
+      - id: vault
         uses: .
         with:
           url: http://127.0.0.1:8200
-          secrets: secret/data/myapp apikey | MY_API_KEY
           method: approle
-          path: approle
-          role: myapp-role
-          namespace: ''
           roleId: ${{ env.ROLE_ID }}
           secretId: ${{ env.SECRET_ID }}
-          tlsSkipVerify: 'true'
+          secrets: |
+            secret/data/myapp DB_PASSWORD
 
-      - name: Assert secret was retrieved via AppRole
+      - name: Assert DB_PASSWORD env var is set
         run: |
-          echo "MY_API_KEY: $MY_API_KEY"
-          if [ "$MY_API_KEY" != "supersecret" ]; then
-            echo "FAIL: expected MY_API_KEY to be 'supersecret', got '$MY_API_KEY'"
+          echo "DB_PASSWORD=$DB_PASSWORD"
+          if [ "$DB_PASSWORD" != "supersecret" ]; then
+            echo "FAIL: expected DB_PASSWORD='supersecret', got '$DB_PASSWORD'"
             exit 1
           fi
           echo "PASS"

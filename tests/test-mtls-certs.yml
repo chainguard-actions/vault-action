@@ -1,4 +1,4 @@
-name: Test JWT auth method inputs (jwtPrivateKey, jwtKeyPassword, jwtGithubAudience)
+name: Test mTLS certificate inputs (caCertificate, clientCertificate, clientKey)
 on:
   workflow_dispatch:
 jobs:
@@ -6,12 +6,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Generate test RSA key and encode as base64
-        id: keygen
+      - name: Generate self-signed CA and client cert for testing
+        id: certgen
         run: |
-          openssl genrsa -out /tmp/test-key.pem 2048 2>/dev/null
-          KEY_B64=$(base64 -w 0 /tmp/test-key.pem)
-          echo "key_b64=$KEY_B64" >> $GITHUB_OUTPUT
+          # Generate CA key and cert
+          openssl req -x509 -newkey rsa:2048 -keyout /tmp/ca-key.pem \
+            -out /tmp/ca-cert.pem -days 1 -nodes \
+            -subj "/CN=test-ca" 2>/dev/null
+
+          # Generate client key and CSR
+          openssl req -newkey rsa:2048 -keyout /tmp/client-key.pem \
+            -out /tmp/client-csr.pem -nodes \
+            -subj "/CN=test-client" 2>/dev/null
+
+          # Sign client cert with CA
+          openssl x509 -req -in /tmp/client-csr.pem \
+            -CA /tmp/ca-cert.pem -CAkey /tmp/ca-key.pem \
+            -CAcreateserial -out /tmp/client-cert.pem -days 1 2>/dev/null
+
+          CA_B64=$(base64 -w 0 /tmp/ca-cert.pem)
+          CLIENT_CERT_B64=$(base64 -w 0 /tmp/client-cert.pem)
+          CLIENT_KEY_B64=$(base64 -w 0 /tmp/client-key.pem)
+
+          echo "ca_b64=$CA_B64" >> $GITHUB_OUTPUT
+          echo "client_cert_b64=$CLIENT_CERT_B64" >> $GITHUB_OUTPUT
+          echo "client_key_b64=$CLIENT_KEY_B64" >> $GITHUB_OUTPUT
       - name: Start mock Vault server
         run: |
           mkdir -p /tmp/vault-mock
@@ -52,12 +71,11 @@ jobs:
         continue-on-error: true
         with:
           url: 'http://127.0.0.1:8200'
-          method: 'jwt'
-          role: 'jwt-role'
-          jwtPrivateKey: ${{ steps.keygen.outputs.key_b64 }}
-          jwtKeyPassword: ''
-          jwtGithubAudience: 'https://vault.example.com'
-          jwtTtl: 3600
+          method: 'token'
+          token: 'mock-token'
+          caCertificate: ${{ steps.certgen.outputs.ca_b64 }}
+          clientCertificate: ${{ steps.certgen.outputs.client_cert_b64 }}
+          clientKey: ${{ steps.certgen.outputs.client_key_b64 }}
           secrets: 'secret/data/test value | TEST_SECRET'
           tlsSkipVerify: 'true'
       - name: Assert inputs were accepted
@@ -67,4 +85,4 @@ jobs:
             echo "FAIL: action step was skipped unexpectedly"
             exit 1
           fi
-          echo "PASS: action ran with jwtPrivateKey, jwtKeyPassword, and jwtGithubAudience inputs"
+          echo "PASS: action ran with caCertificate, clientCertificate, and clientKey inputs"

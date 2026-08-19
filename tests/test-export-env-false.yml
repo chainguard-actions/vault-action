@@ -1,4 +1,4 @@
-name: Test token authentication
+name: Test exportEnv false - secrets as outputs only
 on:
   workflow_dispatch:
 jobs:
@@ -37,7 +37,7 @@ jobs:
             -H "X-Vault-Token: $VAULT_TOKEN" \
             -H "Content-Type: application/json" \
             -X POST \
-            -d '{"data": {"MY_SECRET": "hello-world", "ANOTHER": "foobar"}}' \
+            -d '{"data": {"SECRET_VALUE": "output-only-secret"}}' \
             "$VAULT_ADDR/v1/secret/data/myapp"
 
       - id: vault
@@ -46,24 +46,26 @@ jobs:
           url: http://127.0.0.1:8200
           method: token
           token: test-root-token
+          exportEnv: 'false'
           secrets: |
-            secret/data/myapp MY_SECRET ;
-            secret/data/myapp ANOTHER
+            secret/data/myapp SECRET_VALUE
 
-      - name: Assert MY_SECRET env var is set
+      - name: Assert SECRET_VALUE is available as step output
+        env:
+          ACTUAL: ${{ steps.vault.outputs.SECRET_VALUE }}
         run: |
-          echo "MY_SECRET=$MY_SECRET"
-          if [ "$MY_SECRET" != "hello-world" ]; then
-            echo "FAIL: expected MY_SECRET='hello-world', got '$MY_SECRET'"
+          echo "SECRET_VALUE output: $ACTUAL"
+          if [ "$ACTUAL" != "output-only-secret" ]; then
+            echo "FAIL: expected SECRET_VALUE output='output-only-secret', got '$ACTUAL'"
             exit 1
           fi
           echo "PASS"
 
-      - name: Assert ANOTHER env var is set
+      - name: Assert SECRET_VALUE is NOT set as env var
         run: |
-          echo "ANOTHER=$ANOTHER"
-          if [ "$ANOTHER" != "foobar" ]; then
-            echo "FAIL: expected ANOTHER='foobar', got '$ANOTHER'"
+          echo "SECRET_VALUE env var: '${SECRET_VALUE:-}'"
+          if [ -n "${SECRET_VALUE:-}" ]; then
+            echo "FAIL: expected SECRET_VALUE to NOT be set as env var when exportEnv=false"
             exit 1
           fi
-          echo "PASS"
+          echo "PASS: SECRET_VALUE is not in environment"

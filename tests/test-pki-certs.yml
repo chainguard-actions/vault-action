@@ -1,4 +1,4 @@
-name: Test JWT auth method inputs (jwtPrivateKey, jwtKeyPassword, jwtGithubAudience)
+name: Test PKI certificate generation input
 on:
   workflow_dispatch:
 jobs:
@@ -6,13 +6,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Generate test RSA key and encode as base64
-        id: keygen
-        run: |
-          openssl genrsa -out /tmp/test-key.pem 2048 2>/dev/null
-          KEY_B64=$(base64 -w 0 /tmp/test-key.pem)
-          echo "key_b64=$KEY_B64" >> $GITHUB_OUTPUT
-      - name: Start mock Vault server
+      - name: Start mock Vault server for PKI
         run: |
           mkdir -p /tmp/vault-mock
           cat > /tmp/vault-mock/server.py << 'EOF'
@@ -23,10 +17,17 @@ jobs:
               def do_POST(self):
                   length = int(self.headers.get('Content-Length', 0))
                   self.rfile.read(length)
+                  # Return a mock PKI certificate response
                   self.send_response(200)
                   self.send_header('Content-Type', 'application/json')
                   self.end_headers()
                   self.wfile.write(json.dumps({
+                      "data": {
+                          "certificate": "-----BEGIN CERTIFICATE-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA\n-----END CERTIFICATE-----",
+                          "private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----",
+                          "ca_chain": ["-----BEGIN CERTIFICATE-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA\n-----END CERTIFICATE-----"],
+                          "serial_number": "01:02:03:04:05:06:07:08"
+                      },
                       "auth": {
                           "client_token": "mock-token",
                           "lease_duration": 3600,
@@ -52,13 +53,9 @@ jobs:
         continue-on-error: true
         with:
           url: 'http://127.0.0.1:8200'
-          method: 'jwt'
-          role: 'jwt-role'
-          jwtPrivateKey: ${{ steps.keygen.outputs.key_b64 }}
-          jwtKeyPassword: ''
-          jwtGithubAudience: 'https://vault.example.com'
-          jwtTtl: 3600
-          secrets: 'secret/data/test value | TEST_SECRET'
+          method: 'token'
+          token: 'mock-token'
+          pki: 'pki/issue/my-role common_name=example.com | MY_CERT'
           tlsSkipVerify: 'true'
       - name: Assert inputs were accepted
         run: |
@@ -67,4 +64,4 @@ jobs:
             echo "FAIL: action step was skipped unexpectedly"
             exit 1
           fi
-          echo "PASS: action ran with jwtPrivateKey, jwtKeyPassword, and jwtGithubAudience inputs"
+          echo "PASS: action ran with pki input"

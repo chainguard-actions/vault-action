@@ -1,0 +1,58 @@
+name: Test exportToken and outputToken options
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Vault
+        run: |
+          wget -q -O /tmp/vault.zip https://releases.hashicorp.com/vault/1.13.3/vault_1.13.3_linux_amd64.zip
+          unzip -q /tmp/vault.zip -d /usr/local/bin/
+          vault version
+
+      - name: Start Vault in dev mode
+        run: |
+          vault server -dev -dev-root-token-id=testtoken -dev-listen-address=127.0.0.1:8200 &
+          echo $! > /tmp/vault.pid
+          export VAULT_ADDR=http://127.0.0.1:8200
+          for i in $(seq 1 30); do
+            vault status && break || sleep 1
+          done
+
+      - name: Seed Vault with test secret
+        run: |
+          export VAULT_ADDR=http://127.0.0.1:8200
+          export VAULT_TOKEN=testtoken
+          vault kv put secret/myapp apikey=abc123
+
+      - id: vault
+        uses: .
+        with:
+          url: http://127.0.0.1:8200
+          token: testtoken
+          outputToken: 'true'
+          secrets: secret/data/myapp apikey | API_KEY
+
+      - name: Assert vault_token output is set
+        env:
+          VAULT_TOKEN_OUT: ${{ steps.vault.outputs.vault_token }}
+        run: |
+          echo "vault_token output is set: $([ -n "$VAULT_TOKEN_OUT" ] && echo yes || echo no)"
+          if [ -z "$VAULT_TOKEN_OUT" ]; then
+            echo "FAIL: expected vault_token output to be non-empty"
+            exit 1
+          fi
+          echo "PASS: vault_token output is set"
+
+      - name: Assert API_KEY env var is set
+        run: |
+          echo "API_KEY is set: $([ -n "$API_KEY" ] && echo yes || echo no)"
+          if [ "$API_KEY" != "abc123" ]; then
+            echo "FAIL: expected API_KEY=abc123, got: $API_KEY"
+            exit 1
+          fi
+          echo "PASS: API_KEY is correctly set"

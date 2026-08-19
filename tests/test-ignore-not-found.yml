@@ -1,0 +1,59 @@
+name: Test ignoreNotFound behavior
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Vault
+        run: |
+          wget -q -O /tmp/vault.zip https://releases.hashicorp.com/vault/1.13.3/vault_1.13.3_linux_amd64.zip
+          unzip -q /tmp/vault.zip -d /usr/local/bin/
+          vault version
+
+      - name: Start Vault in dev mode
+        run: |
+          vault server -dev -dev-root-token-id=testtoken -dev-listen-address=127.0.0.1:8200 &
+          echo $! > /tmp/vault.pid
+          export VAULT_ADDR=http://127.0.0.1:8200
+          for i in $(seq 1 30); do
+            vault status && break || sleep 1
+          done
+
+      - name: Seed Vault with one secret (not the other)
+        run: |
+          export VAULT_ADDR=http://127.0.0.1:8200
+          export VAULT_TOKEN=testtoken
+          vault kv put secret/exists mykey=myvalue
+
+      - name: Action should succeed when ignoreNotFound=true even if some secrets missing
+        id: vault
+        uses: .
+        with:
+          url: http://127.0.0.1:8200
+          token: testtoken
+          ignoreNotFound: 'true'
+          secrets: |
+            secret/data/exists mykey | FOUND_SECRET ;
+            secret/data/doesnotexist somekey | MISSING_SECRET
+
+      - name: Assert found secret is set
+        run: |
+          echo "FOUND_SECRET: $FOUND_SECRET"
+          if [ "$FOUND_SECRET" != "myvalue" ]; then
+            echo "FAIL: expected FOUND_SECRET=myvalue, got: $FOUND_SECRET"
+            exit 1
+          fi
+          echo "PASS: found secret is correctly set"
+
+      - name: Assert missing secret is empty (not set)
+        run: |
+          echo "MISSING_SECRET is empty: $([ -z "$MISSING_SECRET" ] && echo yes || echo no)"
+          if [ -n "$MISSING_SECRET" ]; then
+            echo "FAIL: expected MISSING_SECRET to be unset/empty, got: $MISSING_SECRET"
+            exit 1
+          fi
+          echo "PASS: missing secret is correctly unset"

@@ -1,4 +1,4 @@
-name: Test JWT auth method inputs (jwtPrivateKey, jwtKeyPassword, jwtGithubAudience)
+name: Test namespace, extraHeaders, and secretEncodingType inputs
 on:
   workflow_dispatch:
 jobs:
@@ -6,12 +6,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Generate test RSA key and encode as base64
-        id: keygen
-        run: |
-          openssl genrsa -out /tmp/test-key.pem 2048 2>/dev/null
-          KEY_B64=$(base64 -w 0 /tmp/test-key.pem)
-          echo "key_b64=$KEY_B64" >> $GITHUB_OUTPUT
       - name: Start mock Vault server
         run: |
           mkdir -p /tmp/vault-mock
@@ -38,8 +32,11 @@ jobs:
                   self.send_response(200)
                   self.send_header('Content-Type', 'application/json')
                   self.end_headers()
+                  # Return a base64-encoded value for secretEncodingType test
+                  import base64
+                  encoded = base64.b64encode(b'hello').decode()
                   self.wfile.write(json.dumps({
-                      "data": {"value": "mock-secret"}
+                      "data": {"value": encoded}
                   }).encode())
           server = http.server.HTTPServer(('127.0.0.1', 8200), Handler)
           server.serve_forever()
@@ -52,13 +49,14 @@ jobs:
         continue-on-error: true
         with:
           url: 'http://127.0.0.1:8200'
-          method: 'jwt'
-          role: 'jwt-role'
-          jwtPrivateKey: ${{ steps.keygen.outputs.key_b64 }}
-          jwtKeyPassword: ''
-          jwtGithubAudience: 'https://vault.example.com'
-          jwtTtl: 3600
+          method: 'token'
+          token: 'mock-token'
+          namespace: 'my-namespace'
+          extraHeaders: |
+            X-Custom-Header: custom-value
+            X-Another-Header: another-value
           secrets: 'secret/data/test value | TEST_SECRET'
+          secretEncodingType: 'base64'
           tlsSkipVerify: 'true'
       - name: Assert inputs were accepted
         run: |
@@ -67,4 +65,4 @@ jobs:
             echo "FAIL: action step was skipped unexpectedly"
             exit 1
           fi
-          echo "PASS: action ran with jwtPrivateKey, jwtKeyPassword, and jwtGithubAudience inputs"
+          echo "PASS: action ran with namespace, extraHeaders, and secretEncodingType inputs"
