@@ -8,7 +8,7 @@ Hardened by [Chainguard](https://www.chainguard.dev) from the upstream action at
 
 | Version | Tag | Upstream commit |
 |---------|-----|-----------------|
-| v3.4.0 | [`v3.4.0`](https://github.com/chainguard-actions/hashicorp-vault-action/tree/v3.4.0) | — |
+| v3.4.0 | [`v3.4.0`](https://github.com/chainguard-actions/hashicorp-vault-action/tree/v3.4.0) | [`4c06c5c`](https://github.com/hashicorp/vault-action/commit/4c06c5ccf5c0761b6029f56cfb1dcf5565918a3b) |
 | v4.0.0 | [`v4.0.0`](https://github.com/chainguard-actions/hashicorp-vault-action/tree/v4.0.0) | [`892a268`](https://github.com/hashicorp/vault-action/commit/892a26828f195e65540a40b4768ae4571f51ebfc) |
 
 ## Privacy
